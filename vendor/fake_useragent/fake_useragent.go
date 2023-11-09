@@ -1,4 +1,4 @@
-package github.com/leeehuang/fake_useragent
+package fake_useragent
 
 import (
     "math/rand"
