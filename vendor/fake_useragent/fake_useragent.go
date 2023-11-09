@@ -1,4 +1,4 @@
-package fake_useragent
+package github.com/leeehuang/govid/vendor/fake_useragent
 
 import (
     "math/rand"
