@@ -1,3 +1,3 @@
-module github.com/leeehuang/govid/vendor/fake_useragent
+module github.com/leeehuang/fake_useragent
 
 go 1.21.4
