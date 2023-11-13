@@ -10,6 +10,8 @@ import (
     "os/exec"
     "strconv"
     "log"
+    
+    "progressbar"
 )
 
 type RequestConfig struct {
@@ -139,9 +141,11 @@ func (d *Downloader) GetFile() (int64, error) {
         return 0, err
     }
     defer out.Close()
+    // Init the progress bar
+    bar := progressbar.DefaultBytes(45, resp.ContentLength, d.Output)
     // Create a buffer
     buffer := make([]byte, 32000)
-    n, err := io.CopyBuffer(out, resp.Body, buffer)
+    n, err := io.CopyBuffer(io.MultiWriter(out, bar), resp.Body, buffer)
     return n, err
 }
 
@@ -161,6 +165,15 @@ func (d *Downloader) MultiGet() error {
     var wg sync.WaitGroup
     wg.Add(d.Thread)
 
+    var bar *progressbar.ProgressBar
+    // Init progress bar for async part
+    if d.Async {
+        bar = progressbar.Default(45, int64(d.Thread), "Downloading " + d.Output)
+    } else {
+    // init progress bar for partAt
+        bar = progressbar.DefaultBytes(45, total, "Downloading " + d.Output)
+    }
+
     for offset := int64(0); offset < total; offset += sectionLen {
         offset := offset
         limit := offset + sectionLen
@@ -168,9 +181,9 @@ func (d *Downloader) MultiGet() error {
             limit = total
         }
         if d.Async {
-            go d.AsyncPart(index, offset, limit, &wg)
+            go d.AsyncPart(index, offset, limit, &wg, bar)
         } else {
-            go d.PartAt(offset, limit, &wg)
+            go d.PartAt(offset, limit, &wg, bar)
         }
         index++
     }
@@ -222,7 +235,7 @@ func (d *Downloader) Part(off int64, lim int64) {
 }
 
 // AsyncPart() run the external binary to download separate file
-func (d *Downloader) AsyncPart(suffix int, off, lim int64, wg *sync.WaitGroup) {
+func (d *Downloader) AsyncPart(suffix int, off, lim int64, wg *sync.WaitGroup, bar *progressbar.ProgressBar) {
     defer wg.Done()
     outFile := d.Output + "_" + strconv.Itoa(suffix)
     cmd := exec.Command("./utils/part",
@@ -236,10 +249,11 @@ func (d *Downloader) AsyncPart(suffix int, off, lim int64, wg *sync.WaitGroup) {
     if err != nil {
         panic(err)
     }
+    bar.Add(1)
 }
 
 // PartAt() copy to one file but at the offset
-func (d *Downloader) PartAt(off int64, lim int64, wg *sync.WaitGroup) {
+func (d *Downloader) PartAt(off int64, lim int64, wg *sync.WaitGroup, bar *progressbar.ProgressBar) {
     defer wg.Done()
     c := &RequestConfig {
         Method: "GET",
@@ -266,7 +280,7 @@ func (d *Downloader) PartAt(off int64, lim int64, wg *sync.WaitGroup) {
     buffer := make([]byte, 32000)
     // Copy to file at offset
     sectionWriter := io.NewOffsetWriter(io.WriterAt(out), off)
-    _, err = io.CopyBuffer(sectionWriter, resp.Body, buffer)
+    _, err = io.CopyBuffer(io.MultiWriter(sectionWriter, bar), resp.Body, buffer)
     if err != nil {
         log.Printf("Failed to copy to %s at %d", d.Output, off)
         panic(err)
@@ -284,6 +298,8 @@ func (d *Downloader) MergeAsyncPart(num int, sectionLen int64) error {
         return err
     }
     defer outFile.Close()
+    // Init progress bar for init process
+    bar := progressbar.Default(45, int64(num), "Merging")
     // Loop through all section files and write to file
     for i := 0; i < num; i++ {
         section := d.Output + "_" + strconv.Itoa(i)
@@ -292,14 +308,14 @@ func (d *Downloader) MergeAsyncPart(num int, sectionLen int64) error {
             log.Printf("Failed to open %s\n", section)
             return err
         }
-            go writeToOffset(outFile, sectionFile, offset, &wg)
+            go writeToOffset(outFile, sectionFile, offset, &wg, bar)
             offset += sectionLen
         }
     wg.Wait()
     return err
 }
 
-func writeToOffset(outFile, sectionFile *os.File, offset int64, wg *sync.WaitGroup) {
+func writeToOffset(outFile, sectionFile *os.File, offset int64, wg *sync.WaitGroup, bar *progressbar.ProgressBar) {
     defer wg.Done()
     // Create a buffer
     buffer := make([]byte, 32000)
@@ -315,4 +331,5 @@ func writeToOffset(outFile, sectionFile *os.File, offset int64, wg *sync.WaitGro
     if err != nil {
         log.Printf("Failed to remove %s\nError: %v\n", sectionFile.Name(), err)
     }
+    bar.Add(1)
 }

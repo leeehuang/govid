@@ -14,6 +14,7 @@ import (
 
     "httpGetter"
     ua "fake_useragent"
+    "progressbar"
     "m3u8"
 )
 
@@ -24,17 +25,19 @@ type mediaFile struct {
 
 func main() {
     var (
-        url, prefix, suffix string
+        output, url, prefix, suffix string
     )
     uaFlag := flag.String("ua", "0", "select useragent, 0 is random, OPTIONS chrome, firefox, safari, edge")
     refererFlag := flag.String("r", "", "passing custom referer")
     asyncFlag := flag.Bool("async", false, "Download using async mode, make sure you have part binaryin the same directory of vidl")
     dThread := flag.Int("dThread", 10, "number of part to be split to download")
-    output := flag.String("o", "untitle", "output file")
     thread := flag.Int("T", 10, "number of thread to use to download hls content")
     bDirect := flag.Bool("d", false, "direct download, passing T option will not have effect, using dThread for split file and download instead")
     flag.Parse()
-    
+
+    // Getting output file name
+    fmt.Print("=> Output: ")
+    fmt.Scanln(&output)
     // Getting link and optional prefix, suffix to use while download hls
     fmt.Print("=> URL: ")
     fmt.Scanln(&url)
@@ -61,7 +64,7 @@ func main() {
         Url: url,
         UserAgent: myUserAgent,
         Referer: *refererFlag,
-        Output: *output,
+        Output: output,
         Thread: *dThread,
         Async: *asyncFlag,
     }
@@ -95,8 +98,8 @@ func hlsDownloader(d *httpGetter.Downloader, thread int, prefix, suffix string) 
         downloadFromMediaPlaylist(d, thread, mediapl, prefix, suffix)
 	case m3u8.MASTER:
 		masterpl := playlist.(*m3u8.MasterPlaylist)
-        mediapl := promptForMediaPlaylist(d, masterpl, prefix, suffix)
-        downloadFromMediaPlaylist(d, thread, mediapl, prefix, suffix)
+        mediapl, newPrefix, newSuffix := promptForMediaPlaylist(d, masterpl, prefix, suffix)
+        downloadFromMediaPlaylist(d, thread, mediapl, newPrefix, newSuffix)
 	}
 }
 
@@ -114,13 +117,16 @@ func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3
     if err != nil {
         panic(err)
     }
+
+    // Init progress bar
+    bar := progressbar.Default(45, int64(len(mediapl.GetAllSegments())), outFile)
     // Start Workers
     for i := 0; i < thread; i++ {
         wg.Add(1)
         if d.Async {
-            go asyncWorker(d, jobs, &wg)
+            go asyncWorker(d, jobs, &wg, bar)
         } else {
-            go worker(d, jobs, &wg)
+            go worker(d, jobs, &wg, bar)
         }
     }
 
@@ -132,7 +138,7 @@ func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3
         panic(err)
     }
     defer lf.Close()
-
+    
     for _, segment := range mediapl.GetAllSegments() {
         filename := strconv.Itoa(index) + ".ts"
         // write to list in order
@@ -152,6 +158,7 @@ func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3
 
     close(jobs)
     wg.Wait()
+    bar.Finish()
     // Merge .ts file to mp4 output with ffmpeg
     cmd := exec.Command("ffmpeg", "-f", "concat", "-i", listFile, "-c", "copy", "-bsf:a", "aac_adtstoasc", outFile)
     cmd.Stdout = os.Stdout
@@ -168,7 +175,7 @@ func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3
 // This function use goroutine to download but the function return before io.Copy finish
 // Need more investigate
 // For now, using the binary in utils to download for multiprocessing
-func worker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.WaitGroup) {
+func worker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.WaitGroup, bar *progressbar.ProgressBar) {
     defer wg.Done()
     for m := range jobs {
         c := &httpGetter.RequestConfig {
@@ -199,12 +206,13 @@ func worker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.WaitGroup
             log.Println("Failed to copy", m.FilePath, "\nError:", err)
             continue
         }
-        fmt.Println("Finish", m.FilePath)
+        //fmt.Println("Finish", m.FilePath)
+        bar.Add(1)
     }
 }
 
 
-func asyncWorker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.WaitGroup) {
+func asyncWorker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.WaitGroup, bar *progressbar.ProgressBar) {
     defer wg.Done()
     for m := range jobs {
         cmd := exec.Command("./utils/getFileUtil",
@@ -217,19 +225,21 @@ func asyncWorker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.Wait
             log.Println("Failed to get", m.FilePath, "\nError:", err)
             panic(err)
         }
+        bar.Add(1)
     }
 }
 
-func promptForMediaPlaylist(d *httpGetter.Downloader, masterpl *m3u8.MasterPlaylist, prefix, suffix string) *m3u8.MediaPlaylist {
+func promptForMediaPlaylist(d *httpGetter.Downloader, masterpl *m3u8.MasterPlaylist, prefix, suffix string) (*m3u8.MediaPlaylist, newPrefix, newSuffix string) {
     var i, selection int = 1, 0
     for _, v := range masterpl.Variants {
-        fmt.Printf("- %d) CODECS:%s   RESOLUTION:%s\n", i, (*v).Codecs,(*v).Resolution)
+        fmt.Printf("- %d) CODECS:%s   RESOLUTION:%s\n[ URI:%s ]\n", i, (*v).Codecs, (*v).Resolution), (*v).URI
         i++
     }
     for selection == 0 || selection > i{
         fmt.Print("=> Choose media to download: ")
         fmt.Scanln(&selection)
     }
+
     // decrease selection index by 1 to use with array
     selection--
     // Retrieve media playlist from url
@@ -244,5 +254,19 @@ func promptForMediaPlaylist(d *httpGetter.Downloader, masterpl *m3u8.MasterPlayl
         log.Println("Failed to decode media playlist stream")
         panic(err)
     }
-    return p.(*m3u8.MediaPlaylist)
+
+    // Getting new prefix for media file
+    fmt.Println("=> Input new Prefix and Suffix for media file\n    Input 'same' to reuse prefix or suffix")
+    fmt.Print("=> Prefix: ")
+    fmt.Scanln(&newPrefix)
+    fmt.Print("=> Suffix: ")
+    fmt.Scanln(&newSuffix)
+    // Check if prefix and suffix the same
+    if newPrefix == "same" {
+        newPrefix = prefix
+    }
+    if newSuffix == "same" {
+        newSuffix = suffix
+    }
+    return p.(*m3u8.MediaPlaylist), newPrefix, newSuffix
 }
