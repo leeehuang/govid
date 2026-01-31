@@ -24,6 +24,7 @@ type mediaFile struct {
 }
 
 func main() {
+
     var (
         output, url, prefix, suffix string
     )
@@ -33,6 +34,8 @@ func main() {
     dThread := flag.Int("dThread", 10, "number of part to be split to download")
     thread := flag.Int("T", 10, "number of thread to use to download hls content")
     bDirect := flag.Bool("d", false, "direct download, passing T option will not have effect, using dThread for split file and download instead")
+    bCleanup := flag.Bool("c", false, "Clean up temp folder afterward")
+    bConvert := flag.Bool("convert", false, "Attempt to convert .ts to .mp4, if the file download seem to be PNG, use vidl-header-convert to attempt to convert to mp4")
     flag.Parse()
 
     // Getting output file name
@@ -76,11 +79,11 @@ func main() {
         }
         return
     } else {
-        hlsDownloader(d, *thread, prefix, suffix)
+        hlsDownloader(d, *thread, prefix, suffix, *bCleanup, *bConvert)
     }
 }
 
-func hlsDownloader(d *httpGetter.Downloader, thread int, prefix, suffix string) {
+func hlsDownloader(d *httpGetter.Downloader, thread int, prefix, suffix string, bCleanup, bConvert bool) {
     m3u8_stream, err := d.Get()
     if err != nil {
         log.Println("Failed to fetch m3u8 playlist")
@@ -95,15 +98,15 @@ func hlsDownloader(d *httpGetter.Downloader, thread int, prefix, suffix string) 
     switch listType {
 	case m3u8.MEDIA:
 		mediapl := playlist.(*m3u8.MediaPlaylist)
-        downloadFromMediaPlaylist(d, thread, mediapl, prefix, suffix)
+        downloadFromMediaPlaylist(d, thread, mediapl, prefix, suffix, bCleanup, bConvert)
 	case m3u8.MASTER:
 		masterpl := playlist.(*m3u8.MasterPlaylist)
         mediapl, newPrefix, newSuffix := promptForMediaPlaylist(d, masterpl, prefix, suffix)
-        downloadFromMediaPlaylist(d, thread, mediapl, newPrefix, newSuffix)
+        downloadFromMediaPlaylist(d, thread, mediapl, newPrefix, newSuffix, bCleanup, bConvert)
 	}
 }
 
-func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3u8.MediaPlaylist, prefix, suffix string) {
+func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3u8.MediaPlaylist, prefix, suffix string, bCleanup, bConvert bool) {
     // segment files index
     var index int
     var wg sync.WaitGroup
@@ -160,16 +163,22 @@ func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3
     wg.Wait()
     bar.Finish()
     // Merge .ts file to mp4 output with ffmpeg
-    cmd := exec.Command("ffmpeg", "-f", "concat", "-i", listFile, "-c", "copy", "-bsf:a", "aac_adtstoasc", outFile)
-    cmd.Stdout = os.Stdout
-    cmd.Stderr = os.Stderr
-    err = cmd.Run()
-    if err != nil {
-        log.Fatal(err)
+
+    if bConvert {
+        cmd := exec.Command("ffmpeg", "-f", "concat", "-i", listFile, "-c", "copy", "-bsf:a", "aac_adtstoasc", outFile)
+        cmd.Stdout = os.Stdout
+        cmd.Stderr = os.Stderr
+        err = cmd.Run()
+        if err != nil {
+            log.Fatal(err)
+        }
     }
     // Cleanup
-    fmt.Println("Cleaning up...")
-    os.RemoveAll(outDir)
+    fmt.Println("\n=> Finish: ", outFile)
+    if bCleanup {
+        fmt.Println("=> Cleaning up...")
+        os.RemoveAll(outDir)
+    }
 }
 
 // This function use goroutine to download but the function return before io.Copy finish
@@ -213,9 +222,14 @@ func worker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.WaitGroup
 
 
 func asyncWorker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.WaitGroup, bar *progressbar.ProgressBar) {
+    homedir, err := os.UserHomeDir()
+    if err != nil {
+        log.Panic(err)
+    }
+    utilBin := filepath.Join(".", homedir, ".local/bin/utils/getFileUtil")
     defer wg.Done()
     for m := range jobs {
-        cmd := exec.Command("./utils/getFileUtil",
+        cmd := exec.Command(utilBin,
             "-u", m.URI,
             "-ua", d.UserAgent,
             "-r", d.Referer,
@@ -229,10 +243,11 @@ func asyncWorker(d *httpGetter.Downloader, jobs <-chan *mediaFile, wg *sync.Wait
     }
 }
 
-func promptForMediaPlaylist(d *httpGetter.Downloader, masterpl *m3u8.MasterPlaylist, prefix, suffix string) (*m3u8.MediaPlaylist, newPrefix, newSuffix string) {
+func promptForMediaPlaylist(d *httpGetter.Downloader, masterpl *m3u8.MasterPlaylist, prefix, suffix string) (*m3u8.MediaPlaylist, string, string) {
     var i, selection int = 1, 0
+    var newPrefix, newSuffix string
     for _, v := range masterpl.Variants {
-        fmt.Printf("- %d) CODECS:%s   RESOLUTION:%s\n[ URI:%s ]\n", i, (*v).Codecs, (*v).Resolution), (*v).URI
+        fmt.Printf("- %d) CODECS:%s   RESOLUTION:%s\n[ URI:%s ]\n", i, (*v).Codecs, (*v).Resolution, (*v).URI)
         i++
     }
     for selection == 0 || selection > i{

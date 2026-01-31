@@ -7,6 +7,7 @@ import (
     "os"
     "log"
     "errors"
+//    "path/filepath"
 )
 
 type Agent struct {
@@ -26,9 +27,14 @@ var (
 
 // Populate to access useragent list
 func init() {
-    data, err := os.ReadFile("vendor/fake_useragent/browsers.json")
+    //homedir, err := os.UserHomeDir()
+    //if err != nil {
+    //    log.Panic(err)
+    //}
+    dataFile := "./utils/browsers.json"
+    data, err := os.ReadFile(dataFile)
     if err != nil {
-        panic(err)
+        log.Panic(err)
     }
 
     err = json.Unmarshal(data, &userAgents)

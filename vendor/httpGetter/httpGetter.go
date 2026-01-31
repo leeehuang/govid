@@ -10,6 +10,7 @@ import (
     "os/exec"
     "strconv"
     "log"
+    "path/filepath"
     
     "progressbar"
 )
@@ -38,7 +39,7 @@ type Downloader struct {
 
 const (
     defaultUserAgent string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.54 Safari/537.36"
-    defaultReferer string = "https://wwwgoogle.com"
+    defaultReferer string = "https://www.google.com"
 )
 
 var (
@@ -238,14 +239,19 @@ func (d *Downloader) Part(off int64, lim int64) {
 func (d *Downloader) AsyncPart(suffix int, off, lim int64, wg *sync.WaitGroup, bar *progressbar.ProgressBar) {
     defer wg.Done()
     outFile := d.Output + "_" + strconv.Itoa(suffix)
-    cmd := exec.Command("./utils/part",
+    homedir, err := os.UserHomeDir()
+    if err != nil {
+        log.Panic(err)
+    }
+    utilBin := filepath.Join(".", homedir, ".local/bin/utils/part")
+    cmd := exec.Command(utilBin,
         "-url", d.Url,
         "-ua", d.UserAgent,
         "-r", d.Referer,
         "-o", outFile,
         "-off", strconv.FormatInt(off, 10),
         "-l", strconv.FormatInt(lim, 10) )
-    err := cmd.Run()
+    err = cmd.Run()
     if err != nil {
         panic(err)
     }
