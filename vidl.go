@@ -11,6 +11,7 @@ import (
     "os"
     "sync"
     "io"
+    "strings"
 
     "httpGetter"
     ua "fake_useragent"
@@ -83,6 +84,7 @@ func main() {
     }
 }
 
+
 func hlsDownloader(d *httpGetter.Downloader, thread int, prefix, suffix string, bCleanup, bConvert bool) {
     m3u8_stream, err := d.Get()
     if err != nil {
@@ -97,7 +99,11 @@ func hlsDownloader(d *httpGetter.Downloader, thread int, prefix, suffix string, 
 
     switch listType {
 	case m3u8.MEDIA:
+
 		mediapl := playlist.(*m3u8.MediaPlaylist)
+        if (mediapl.Key != nil) {
+            log.Println(*mediapl.Key)
+        }
         downloadFromMediaPlaylist(d, thread, mediapl, prefix, suffix, bCleanup, bConvert)
 	case m3u8.MASTER:
 		masterpl := playlist.(*m3u8.MasterPlaylist)
@@ -120,6 +126,36 @@ func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3
     if err != nil {
         panic(err)
     }
+
+    //Get Key and IV for encrypted media
+    if mediapl.Key != nil {
+        utilBin := filepath.Join("./utils/getFileUtil")
+        keyFile := filepath.Join(outDir, "ts.key")
+
+        cmd := exec.Command(utilBin,
+            "-u", prefix + "/" + mediapl.Key.URI,
+            "-ua", d.UserAgent,
+            "-r", d.Referer,
+            "-o", keyFile)
+        err := cmd.Run()
+        if err != nil {
+            log.Println("Failed to get", keyFile, "\nError:", err)
+            panic(err)
+        }
+
+        ivFile :=filepath.Join(outDir, "iv")
+        ivf, err := os.OpenFile(ivFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0666)
+        if err != nil {
+            panic(err)
+        }
+        _, err = ivf.WriteString(mediapl.Key.IV)
+        if err != nil {
+            panic(err)
+        }
+
+    }
+
+
 
     // Init progress bar
     bar := progressbar.Default(45, int64(len(mediapl.GetAllSegments())), outFile)
@@ -165,6 +201,17 @@ func downloadFromMediaPlaylist(d *httpGetter.Downloader, thread int, mediapl *m3
     // Merge .ts file to mp4 output with ffmpeg
 
     if bConvert {
+        // decrypt if need
+        if mediapl.Key != nil {
+            descryptCmd:= exec.Command("./m3u8_decrypt.sh", outDir, strings.TrimPrefix(mediapl.Key.IV, "0x"))
+            descryptCmd.Stdout = os.Stdout
+            descryptCmd.Stderr = os.Stderr
+            err = descryptCmd.Run()
+            if err != nil {
+                log.Fatal(err)
+            }
+        }
+
         cmd := exec.Command("ffmpeg", "-f", "concat", "-i", listFile, "-c", "copy", "-bsf:a", "aac_adtstoasc", outFile)
         cmd.Stdout = os.Stdout
         cmd.Stderr = os.Stderr
