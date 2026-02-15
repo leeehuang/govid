@@ -37,6 +37,7 @@ func main() {
     bDirect := flag.Bool("d", false, "direct download, passing T option will not have effect, using dThread for split file and download instead")
     bCleanup := flag.Bool("c", false, "Clean up temp folder afterward")
     bConvert := flag.Bool("convert", false, "Attempt to convert .ts to .mp4, if the file download seem to be PNG, use vidl-header-convert to attempt to convert to mp4")
+    m3u8FileFlag := flag.String("f", "", "local m3u8 fille")
     flag.Parse()
 
     // Getting output file name
@@ -80,16 +81,27 @@ func main() {
         }
         return
     } else {
-        hlsDownloader(d, *thread, prefix, suffix, *bCleanup, *bConvert)
+        hlsDownloader(d, *thread, prefix, suffix, *bCleanup, *bConvert, *m3u8FileFlag)
     }
 }
 
 
-func hlsDownloader(d *httpGetter.Downloader, thread int, prefix, suffix string, bCleanup, bConvert bool) {
-    m3u8_stream, err := d.Get()
-    if err != nil {
-        log.Println("Failed to fetch m3u8 playlist")
-        panic(err)
+func hlsDownloader(d *httpGetter.Downloader, thread int, prefix, suffix string, bCleanup, bConvert bool, m3u8File string) {
+    var m3u8_stream []byte
+    var err error
+    
+    if m3u8File == "" {
+        m3u8_stream, err = d.Get()
+        if err != nil {
+            log.Println("Failed to fetch m3u8 playlist")
+            panic(err)
+        }
+    } else {
+        m3u8_stream, err = os.ReadFile(m3u8File)
+        if err != nil {
+            log.Println("Failed to read m3u8 playlist from file")
+            panic(err)
+        } 
     }
     playlist, listType, err := m3u8.Decode(*bytes.NewBuffer(m3u8_stream), true)
     if err != nil {
